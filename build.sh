@@ -5,8 +5,16 @@ mkdir -p .build
 CC=clang++
 CFLAGS="--std=c++20 -I. "
 CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
+# CFLAGS+=" -O3 -march=native -DDISABLE_PASSERT"
+
+# CFLAGS+=" -g -O1 -march=native -fsanitize=address -fno-omit-frame-pointer"
 # CFLAGS+=" -O0 -g -fsanitize=address -fno-omit-frame-pointer"
 
+# g++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp        -DDISABLE_PASSERT
+
+    # clang++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp    -DDISABLE_PASSERT -lopenblas
+
+    # clang++ -O2 -g -fno-omit-frame-pointer -ffast-math -march=native --std=c++20 -I. -o main main.cpp -DDISABLE_PASSERT
 
 HEADERS_FILES=$(g++ -E -M -I. ./cmd/main.cpp)
 
@@ -55,22 +63,22 @@ else
     BUILD_UPDATE=0
 fi
 
+OLD_CFLAGS=$(readelf --string-dump=.cflags "$BUILD_FILE")
+if [[ "$OLD_CFLAGS" != *"$CFLAGS"* ]]; then
+    echo "CFLAGS changed, rebuilding..."
+    echo "Old CFLAGS: $OLD_CFLAGS"
+    echo "New CFLAGS: $CFLAGS"
+    BUILD_UPDATE=0
+fi
+
 if [ "$LATEST_SOURCE_DEP_UPDATE" -gt "$BUILD_UPDATE" ]; then
     echo "Changes detected, rebuilding..."
 
     $CC $CFLAGS -o "$BUILD_FILE" cmd/main.cpp
 
-    # g++ -J8 -O3 -ffast-math -march=native --std=c++20 -I. -o "$BUILD_FILE" cmd/main.cpp
-    # -lopenblas
-    # g++ --std=c++20 -I. -o main main.cpp -lopenblas
-    # g++ -O0 -g -fsanitize=address --std=c++20 -I. -o main main.cpp
-    # g++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp   
-
-    # g++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp        -DDISABLE_PASSERT
-
-    # clang++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp    -DDISABLE_PASSERT -lopenblas
-
-    # clang++ -O2 -g -fno-omit-frame-pointer -ffast-math -march=native --std=c++20 -I. -o main main.cpp -DDISABLE_PASSERT
+    objcopy --add-section .cflags=<(echo "$CFLAGS") \
+        --set-section-flags .cflags=noload,readonly \
+        "$BUILD_FILE"
 else
     echo "No changes, skipping build."
 fi

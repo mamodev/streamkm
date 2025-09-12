@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include "streamkm/core/random.hpp"
@@ -14,29 +15,33 @@
 namespace streamkm
 {
   
-struct __BaseSwapClusterProps {
-    std::span<float> data;
+struct __SqNormsCachedSwapClusterProps {
+    std::span<float>    data;
+    std::span<double>    sqnorms; // cached squared norms for each point
+    std::span<double>   dcache; // cached distance to current center
 
-    __BaseSwapClusterProps() = default;
-    __BaseSwapClusterProps(std::span<float> d) : data(d) {}
+    __SqNormsCachedSwapClusterProps(std::span<float> d, std::span<double> sn, std::span<double> dc) 
+        : data(d), sqnorms(sn), dcache(dc) {}
+   
+     __SqNormsCachedSwapClusterProps() = default;
     // Make it movable but not copyable
-    __BaseSwapClusterProps(const __BaseSwapClusterProps&) = delete;
-    __BaseSwapClusterProps(__BaseSwapClusterProps&&) = default;
-    __BaseSwapClusterProps& operator=(const __BaseSwapClusterProps&) = delete;
-    __BaseSwapClusterProps& operator=(__BaseSwapClusterProps&&) = default;
+    __SqNormsCachedSwapClusterProps(const __SqNormsCachedSwapClusterProps&) = delete;
+    __SqNormsCachedSwapClusterProps(__SqNormsCachedSwapClusterProps&&) = default;
+    __SqNormsCachedSwapClusterProps& operator=(const __SqNormsCachedSwapClusterProps&) = delete;
+    __SqNormsCachedSwapClusterProps& operator=(__SqNormsCachedSwapClusterProps&&) = default;
 
 };
 
-static_assert(MovableNotCopyable<__BaseSwapClusterProps>, "__BaseSwapClusterProps should be movable but not copyable");
+static_assert(MovableNotCopyable<__SqNormsCachedSwapClusterProps>, "__SqNormsCachedSwapClusterProps should be movable but not copyable");
 
 
 template <typename Metrics, template <MovableNotCopyable> typename CCS>
 requires CoresetClusterSetFamily<CCS>
-class _SwapCoresetReducer
+class _SwapSqNormsCachedCoresetReducer
 {    
 public:
     using Result = FlatWPointsResult;
-    using ClusterProps = __BaseSwapClusterProps;
+    using ClusterProps = __SqNormsCachedSwapClusterProps;
 
     Metrics::MetricsSet metrics;
 
@@ -56,6 +61,9 @@ public:
                 for (size_t i = 0; i < STRIDE; i++) {
                     std::swap(node.data[from * STRIDE + i], node.data[to * STRIDE + i]);
                 }
+
+                std::swap(node.dcache[from], node.dcache[to]);
+                std::swap(node.sqnorms[from], node.sqnorms[to]);
             }
         };
 
@@ -73,17 +81,38 @@ public:
         std::uniform_int_distribution<size_t> rand_index(0, n - 1);
         std::size_t choosen_k = 1;
 
+        std::vector<double> squared_norms;
+        std::vector<double> dcache;
+
         auto init_root = [&]() -> std::pair<ClusterProps, double> {
             std::uniform_int_distribution<size_t> rand_index(0, n - 1);
             std::size_t random_point = rand_index(rand_eng);
 
-            auto root = ClusterProps(std::span<float>(data, n * STRIDE));
+            dcache.resize(n, 0.0);
+
+            squared_norms = std::move(
+                flat_wpoints_l2_sqnorms<WithWeights>(data, n, d)
+            );
+
+            auto root = ClusterProps(
+                                        std::span<float>(data, n * STRIDE),
+                                        std::span<double>(squared_norms.data(), squared_norms.size()),
+                                        std::span<double>(dcache.data(), dcache.size())
+                                    );
+            
+            passert(cluster_size(root) == n, "Root node should have {} points, got {}", n, cluster_size(root));
+            passert(dcache.size() == n, "Dcache size should be {}, got {}", n, dcache.size());
+            passert(squared_norms.size() == n, "Squared norms size should be {}, got {}", n, squared_norms.size());
+
             move_point(root, random_point, 0); // Keep the first point as center
 
             double cost = 0.0;
             for (size_t i = 0; i < n; i++) {
-                cost += flat_wpoints_l2_distance<WithWeights>(data, d, i, DEFAULT_CENTER_IDX);
+                double dist = flat_wpoints_l2_distance<WithWeights>(data, d, i, 0);
+                dcache[i] = dist;
+                cost += dist;
             }
+
 
             return std::make_pair(
                 std::move(root),
@@ -130,15 +159,14 @@ public:
             // check distance
             for (size_t round = 0; round < 3; round++)
             {
-
+                const float *node_data_ptr = node.data.data();
                 size_t random_point = DEFAULT_CENTER_IDX;
                 double prob = rand_double(rand_eng) * node_ref.cost();       
                 double cumulative = 0.0;
-                const float *node_data_ptr = node.data.data();
 
                 for (size_t i = 0; i < cluster_size(node); i++)
                 {
-                    cumulative += flat_wpoints_l2_distance<WithWeights>(node_data_ptr, d, i, DEFAULT_CENTER_IDX);
+                    cumulative += node.dcache[i];
                     if (cumulative >= prob)
                     {
                         random_point = i;
@@ -151,8 +179,8 @@ public:
 
                 double cost = 0.0;
                 for (size_t i = 0; i < cluster_size(node); i++) {
-                    double old_dist = flat_wpoints_l2_distance<WithWeights>(node_data_ptr, d, i, DEFAULT_CENTER_IDX);
-                    double new_dist = flat_wpoints_l2_distance<WithWeights>(node_data_ptr, d, i, random_point);
+                    double old_dist = node.dcache[i];
+                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(node_data_ptr, node.sqnorms.data(), d, i, random_point);
                     cost += std::min(old_dist, new_dist);
                 }
 
@@ -180,15 +208,16 @@ public:
             for (size_t i = 0; i < cluster_size(node); i++)
             {
                 const float* data_ptr = node.data.data();
-                double dist_old_center = flat_wpoints_l2_distance<WithWeights>(data_ptr, d, i, DEFAULT_CENTER_IDX);
+                double dist_old_center = node.dcache[i];
                 double dist_new_center = flat_wpoints_l2_distance<WithWeights>(data_ptr, d, i, best_index);
-                bool take_left = dist_old_center <= dist_new_center;
                 
+                bool take_left = dist_old_center <= dist_new_center;
                 is_left_mask[i] = take_left;
                 if (take_left) {
                     left_cost += dist_old_center;
                 } else {
                     right_cost += dist_new_center;
+                    node.dcache[i] = dist_new_center; // Update dcache for the right child
                 }
             }
 
@@ -239,8 +268,14 @@ public:
             cluster_set.cluster_split(node_ref,
                 left_cost,
                 right_cost,
-                ClusterProps(node.data.subspan(0, left_count * STRIDE)),
-                ClusterProps(node.data.subspan(left_count * STRIDE))
+                ClusterProps(node.data.subspan(0, left_count * STRIDE),
+                             node.sqnorms.subspan(0, left_count),
+                             node.dcache.subspan(0, left_count)
+                ),
+                ClusterProps(node.data.subspan(left_count * STRIDE),
+                             node.sqnorms.subspan(left_count),
+                             node.dcache.subspan(left_count)
+                )
             );
 
             choosen_k++;
@@ -281,6 +316,6 @@ public:
 };
 
 
-static_assert(CoresetReducer<_SwapCoresetReducer<CoresetReducerNoMetrics, FenwickCoresetClusterSet>>, "SwapCoresetReducer does not satisfy CoresetReducer concept");
+static_assert(CoresetReducer<_SwapSqNormsCachedCoresetReducer<CoresetReducerNoMetrics, FenwickCoresetClusterSet>>, "_SwapSqNormsCachedCoresetReducer does not satisfy CoresetReducer concept");
 
 } // namespace streamkm
