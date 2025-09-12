@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 
+namespace streamkm {
 struct xorshift128plus {
     using result_type = std::uint64_t;
 
@@ -32,6 +33,8 @@ struct xorshift128plus {
     void seed(std::uint64_t seedval) { seed_with_splitmix64(seedval); }
 
 private:
+
+
     uint64_t s0 = 0, s1 = 0;
 
     static uint64_t splitmix64_step(uint64_t& x) {
@@ -53,3 +56,4 @@ private:
         }
     }
 };
+} // namespace streamkm

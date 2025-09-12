@@ -1,6 +1,8 @@
 #pragma once
 
-#include "core/all.hpp"
+#include "streamkm/core/errors.hpp"
+#include "streamkm/core/parser.hpp"
+
 #include <concepts> 
 #include <span>
 

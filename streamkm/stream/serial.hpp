@@ -1,9 +1,8 @@
 #pragma once
 
-#include "core/all.hpp"
-#include "ds_stream.hpp"
-
-#include "coreset_reducer/coreset_reducer.hpp"
+#include "streamkm/reducer/core/reducer.hpp"
+#include "streamkm/core/errors.hpp"
+#include "./ds_stream.hpp"
 
 #include <concepts>
 #include <span>
@@ -14,13 +13,16 @@
 
 namespace streamkm {
 
-template<CoresetReducer Reducer>
-EResult<h_rr_t<Reducer>> coreset_serial_stream(DataStream auto& stream) {
+
+
+EResult<std::vector<float>> coreset_serial_stream(DataStream auto& stream, CoresetReducer auto& reducer) {
+
+    using Result = reducer_result_t<decltype(reducer)>;
 
     size_t d = stream.getFeatures();
     rassert(d > 0, "Data stream returned zero features");
 
-    std::vector<std::optional<h_rr_t<Reducer>>> buckets;
+    std::vector<std::optional<Result>> buckets;
 
     size_t batch_id = 0;
     while (stream.has_next()) {
@@ -31,13 +33,13 @@ EResult<h_rr_t<Reducer>> coreset_serial_stream(DataStream auto& stream) {
         batch_id++;
 
         size_t n = data.size() / d;
-        auto coreset = Reducer::reduce(data.data(), n, d, n / 2);
+        auto coreset = reducer.reduce(data.data(), n, d, n / 2);
         // std::cout << "Processed batch " << batch_id << std::endl;
 
         size_t next = 0;
 
         while(buckets.size() > next && buckets[next].has_value()) {
-            coreset = std::move(Reducer::reduce(coreset, buckets[next].value()));
+            coreset = std::move(reducer.reduce(coreset, buckets[next].value()));
             buckets[next].reset();
             next++;
         }
@@ -63,7 +65,7 @@ EResult<h_rr_t<Reducer>> coreset_serial_stream(DataStream auto& stream) {
 
     auto final_coreset = std::move(buckets[pos].value());
     if (pos + 1 == buckets.size()) {
-        return std::move(final_coreset);
+        return std::move(reducer.to_flat_points(final_coreset));
     }
 
     pos++;
@@ -74,14 +76,14 @@ EResult<h_rr_t<Reducer>> coreset_serial_stream(DataStream auto& stream) {
         }
 
         final_coreset = std::move(
-            Reducer::reduce(final_coreset, buckets[pos].value())
+            reducer.reduce(final_coreset, buckets[pos].value())
         );
 
         buckets[pos].reset();
         pos++;
     }
 
-    return std::move(final_coreset);
+    return std::move(reducer.to_flat_points(final_coreset));
 }
 
 }

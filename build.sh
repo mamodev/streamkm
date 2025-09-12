@@ -2,9 +2,9 @@ set -e
 
 mkdir -p .build
 
-CC=g++
+CC=clang++
 CFLAGS="--std=c++20 -I. "
-CFLAGS+=" -O3 -ffast-math -march=native"
+CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
 # CFLAGS+=" -O0 -g -fsanitize=address -fno-omit-frame-pointer"
 
 
@@ -58,7 +58,7 @@ fi
 if [ "$LATEST_SOURCE_DEP_UPDATE" -gt "$BUILD_UPDATE" ]; then
     echo "Changes detected, rebuilding..."
 
-    $CC -J8 $CFLAGS -o "$BUILD_FILE" cmd/main.cpp
+    $CC $CFLAGS -o "$BUILD_FILE" cmd/main.cpp
 
     # g++ -J8 -O3 -ffast-math -march=native --std=c++20 -I. -o "$BUILD_FILE" cmd/main.cpp
     # -lopenblas

@@ -15,17 +15,20 @@ namespace streamkm {
         struct MetricsSet {
             std::vector<CoresetReducerChronoMetrics> all_metrics;
 
+            MetricsSet() = default;
             MetricsSet(CoresetReducerChronoMetrics &&m) : all_metrics(1) {
                 all_metrics[0] = std::move(m);
             };
             
-            MetricsSet() = delete;
-
             void merge(MetricsSet &&other) {
                 all_metrics.insert(all_metrics.end(),
                                    other.all_metrics.begin(),
                                    other.all_metrics.end());
             };
+
+            void insert(CoresetReducerChronoMetrics &&m) {
+                all_metrics.push_back(std::move(m));
+            }
 
             template<typename PlotDuration = std::chrono::milliseconds>
             void print_avg() const {
@@ -134,32 +137,35 @@ namespace streamkm {
     struct CoresetReducerNoMetrics
     {
         struct MetricsSet {
+            MetricsSet() = default;
             MetricsSet(CoresetReducerNoMetrics &&) {}
-            MetricsSet() = delete;
-            inline void merge(MetricsSet &&) const {};
-            inline std::string toCsv() const { return "run,iteration,node_pick_ns,new_center_ns,split_ns,cost_update_ns\n"; }
+
+            inline void merge(MetricsSet &&) const noexcept {};
+            inline std::string toCsv() const noexcept{ return "run,iteration,node_pick_ns,new_center_ns,split_ns,cost_update_ns\n"; }
 
             template<typename PlotDuration = std::chrono::milliseconds>
-            inline void print_avg() const {};
+            inline void print_avg() const noexcept {};
+
+            inline void insert(CoresetReducerNoMetrics &&) const noexcept{};
         };
 
-        inline void start_init() const           {}
-        inline void end_init() const             {}
-        inline void start_final_coreset() const  {}
-        inline void end_final_coreset() const    {}
-        inline void start_node_pick() const      {}
-        inline void end_node_pick() const        {}
-        inline void start_new_center() const     {}
-        inline void end_new_center() const       {}
-        inline void start_split() const          {}
-        inline void end_split() const            {}
-        inline void start_cost_update() const    {}
-        inline void end_cost_update() const      {}
-        inline void end_iteration() const        {}
+        inline void start_init() const noexcept           {}
+        inline void end_init() const noexcept             {}
+        inline void start_final_coreset() const noexcept  {}
+        inline void end_final_coreset() const noexcept    {}
+        inline void start_node_pick() const noexcept      {}
+        inline void end_node_pick() const noexcept        {}
+        inline void start_new_center() const noexcept     {}
+        inline void end_new_center() const noexcept       {}
+        inline void start_split() const noexcept          {}
+        inline void end_split() const noexcept            {}
+        inline void start_cost_update() const noexcept    {}
+        inline void end_cost_update() const noexcept      {}
+        inline void end_iteration() const noexcept        {}
 
-        inline void set_initial_tree_cost(double) {}
-        inline void set_tree_cost(double)        {}
-        inline void set_node_size(size_t)        {}
+        inline void set_initial_tree_cost(double) noexcept {}
+        inline void set_tree_cost(double) noexcept        {}
+        inline void set_node_size(size_t) noexcept        {}
 
     };
 

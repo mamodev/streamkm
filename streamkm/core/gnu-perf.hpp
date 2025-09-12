@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string>
 
+namespace streamkm {
 class GnuPerfManager {
  
     // control and ack fifo from perf
@@ -66,3 +67,4 @@ class GnuPerfManager {
     }
  
 };
+} // namespace streamkm

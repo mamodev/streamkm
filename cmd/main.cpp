@@ -3,10 +3,12 @@
 #include <fstream>
 #include <format>
 
+#include "streamkm/streamkm.hpp"
 
-#include "core/all.hpp"
-#include "clusterer/all.hpp"
-#include "coreset_stream/all.hpp"
+// 
+// #include "core/all.hpp"
+// #include "clusterer/all.hpp"
+// #include "coreset_stream/all.hpp"
 
 // #include "coreset_reducer/naive.hpp"
 // #include "coreset_reducer/dcache.hpp"
@@ -15,7 +17,7 @@
 // #include "coreset_reducer/swap_arena.hpp"
 // #include "coreset_reducer/swap_arena_rdist.hpp"
 // #include "coreset_reducer/blas_arena_pickpp_2.hpp"
-#include "coreset_reducer/IndexCoresetReducer.hpp"
+// #include "coreset_reducer/IndexCoresetReducer.hpp"
 // #include "coreset_reducer/IndexCachedCoresetReducer3.hpp"
 // #include "coreset_reducer/IndexCachedFenwickCoresetReducer.hpp"
 
@@ -23,14 +25,13 @@
 using streamkm::Error, streamkm::EResult;
 using Metrics = streamkm::CoresetReducerChronoMetrics;
 // using Metrics = streamkm::CoresetReducerNoMetrics;
-using RandEng = xorshift128plus;
-
+using RandEng = streamkm::xorshift128plus;
 
 
 EResult<void> Main(int argc, char** argv) {
     rassert(argc == 2 || argc == 3, "Usage: {} <data-folder> [<coreset-size>]", argv[0]);
-    
-    GnuPerfManager gnu_perf;
+
+    streamkm::GnuPerfManager gnu_perf;
     gnu_perf.pause();
 
     std::string dataset_folder = argv[1];
@@ -43,6 +44,7 @@ EResult<void> Main(int argc, char** argv) {
         coreset_size = std::atoi(argv[2]);
         rassert(coreset_size > 16, "Coreset size must be greater than 16");
     }
+
 
     auto ds_labels = rpropagate(streamkm::read_all_labels(label_file));
         
@@ -62,27 +64,27 @@ EResult<void> Main(int argc, char** argv) {
         std::vector<float> points;
         std::chrono::milliseconds duration;
         {
-            gnu_perf.resume();
-            auto start = std::chrono::high_resolution_clock::now();
+            auto reducer = streamkm::SwapFCoresetReducer();
 
-            auto cres = streamkm::coreset_serial_stream<streamkm::IndexCoresetReducer<0U, RandEng, Metrics>>(stream);
-            auto res = rpropagate(cres);
+            gnu_perf.resume();
+            auto start = std::chrono::high_resolution_clock::now(); 
+            auto cres = streamkm::coreset_serial_stream(stream, reducer);
+            auto centers = rpropagate(cres);
+            points = std::move(centers);
 
             auto end = std::chrono::high_resolution_clock::now();
             gnu_perf.pause();
             duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
             std::cout << "SwapArena (outer) total time: " << duration << " ms" << std::endl;
-            res.metrics.print_avg();
+            reducer.metrics.print_avg();
 
             auto metrics_filename = std::format(".metrics/{:02}_{:02}_{:02}_{}_metrics.csv", day->tm_hour, day->tm_min, day->tm_sec, "swap_fenwick");
             std::ofstream metrics_file(metrics_filename);
-            std::string csv = res.metrics.toCsv();
+            std::string csv = reducer.metrics.toCsv();
             metrics_file << csv;
             metrics_file.close();
             final_print += std::format("python3 an.py {} & \\\n", metrics_filename);
-
-            points = std::move(streamkm::IndexCoresetReducer<0U, RandEng, Metrics>::to_flat_points(res));
         }
 
         streamkm::DatasetSamples coreset_ds = {
