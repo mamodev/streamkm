@@ -72,7 +72,7 @@ namespace streamkm {
             }
 
             std::string toCsv() const {
-                std::string csv = "run,iteration,node_pick_ns,new_center_ns,split_ns,cost_update_ns,node_size,inital_tree_cost,curr_tree_cost\n";
+                std::string csv = "run,iteration,node_pick_ns,new_center_ns,split_ns,cost_update_ns,node_size,node_offset,initial_tree_cost,curr_tree_cost\n";
                 for (size_t i = 0; i < all_metrics.size(); i++) {
                     const auto &metrics = all_metrics[i];
                     for (size_t j = 0; j < metrics.iterations.size(); j++) {
@@ -88,6 +88,7 @@ namespace streamkm {
                             + std::to_string(split_ns) + "," 
                             + std::to_string(cost_update_ns) + ","
                             + std::to_string(it.node_size) + ","
+                            + std::to_string(it.node_offset) + ","
                             + std::to_string(metrics.initial_tree_cost) + ","
                             + std::to_string(it.tree_cost)
                             + "\n";
@@ -103,8 +104,13 @@ namespace streamkm {
             TimePoint start_new_center_time,    end_new_center_time;
             TimePoint start_split_time,         end_split_time;
             TimePoint start_cost_update_time,   end_cost_update_time;
+            
+            size_t    node_offset = 0;
             size_t    node_size = 0;
             double    tree_cost = 0.0;
+
+
+
         };
         
         std::vector<IterMetrics> iterations;
@@ -112,7 +118,9 @@ namespace streamkm {
         IterMetrics curr_iter;
         TimePoint start_init_time,          end_init_time;
         TimePoint start_final_coreset_time, end_final_coreset_time;
+        
         double    initial_tree_cost = 0.0;
+        size_t    n_points = 0;
 
         void start_init()           { start_init_time =                 Clock::now();  }
         void end_init()             { end_init_time =                   Clock::now();  }
@@ -129,8 +137,12 @@ namespace streamkm {
         void end_iteration()        { iterations.push_back(curr_iter);  }
 
         void set_initial_tree_cost(double c) { initial_tree_cost = c; }
+        void set_n_points(size_t n) { n_points = n; }
+
         void set_tree_cost(double c) { curr_iter.tree_cost = c; }
         void set_node_size(size_t s) { curr_iter.node_size = s;  }
+        void set_node_offset(size_t o) { curr_iter.node_offset = o;  }
+
     };
 
 
@@ -166,6 +178,10 @@ namespace streamkm {
         inline void set_initial_tree_cost(double) noexcept {}
         inline void set_tree_cost(double) noexcept        {}
         inline void set_node_size(size_t) noexcept        {}
+        
+        inline void set_n_points(size_t) noexcept      {}
+        inline void set_node_offset(size_t) noexcept      {}
+
 
     };
 

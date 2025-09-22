@@ -16,22 +16,32 @@ namespace streamkm
 {
   
 struct __SqNormsCachedSwapClusterProps {
-    std::span<float>    data;
-    std::span<double>   sqnorms; // cached squared norms for each point
-    std::span<double>   dcache; // cached distance to current center
-    std::size_t         n_splits;
+    std::vector<std::pair<size_t, size_t>> partitions; // layout [start_idx, length] for each partition
 
-    __SqNormsCachedSwapClusterProps(std::span<float> d, std::span<double> sn, std::span<double> dc, std::size_t ns)
-        : data(d), sqnorms(sn), dcache(dc), n_splits(ns)
-        {}
-   
-     __SqNormsCachedSwapClusterProps() = default;
+    __SqNormsCachedSwapClusterProps(std::vector<std::pair<size_t, size_t>>&& d)
+        : partitions(std::move(d)) {}
+
+    __SqNormsCachedSwapClusterProps() = default;
     // Make it movable but not copyable
     __SqNormsCachedSwapClusterProps(const __SqNormsCachedSwapClusterProps&) = delete;
     __SqNormsCachedSwapClusterProps(__SqNormsCachedSwapClusterProps&&) = default;
     __SqNormsCachedSwapClusterProps& operator=(const __SqNormsCachedSwapClusterProps&) = delete;
     __SqNormsCachedSwapClusterProps& operator=(__SqNormsCachedSwapClusterProps&&) = default;
 
+
+    inline size_t size() const {
+        size_t total = 0;
+        
+        for (const auto& p : partitions) {
+            total += p.second;
+        }
+
+        return total;
+    }
+
+    inline size_t n_partitions() const {
+        return partitions.size();
+    }
 };
 
 static_assert(MovableNotCopyable<__SqNormsCachedSwapClusterProps>, "__SqNormsCachedSwapClusterProps should be movable but not copyable");
@@ -97,11 +107,10 @@ public:
             );
 
             auto root = ClusterProps(
-                                        std::span<float>(data, n * STRIDE),
-                                        std::span<double>(squared_norms.data(), squared_norms.size()),
-                                        std::span<double>(dcache.data(), dcache.size()),
-                                        0
-                                    );
+                    std::vector<std::span<float>>({  
+                        std::pair<size_t, size_t>(0, n)
+                    })
+            );
             
             passert(cluster_size(root) == n, "Root node should have {} points, got {}", n, cluster_size(root));
             passert(dcache.size() == n, "Dcache size should be {}, got {}", n, dcache.size());
@@ -132,9 +141,8 @@ public:
         mtrs.end_init();
 
         mtrs.set_initial_tree_cost(cluster_set.total_cost());
-        mtrs.set_n_points(n);
-        while (choosen_k < k)
-        {
+        while (choosen_k < k)   
+        {   
 
             // ===================
             // Picking Leaf Node
@@ -147,11 +155,7 @@ public:
             auto& node_ref = cluster_set.pick();
             ClusterProps &node = node_ref.props;
             passert(!node.data.empty(), "Picked node should have points, got 0 points, iteration {}", choosen_k);
-
-            size_t offs = static_cast<size_t>(node.data.data() - data) / STRIDE;
-            passert(offs < n, "Node offset should be within range [0, {}), got {}", n, offs);
-            mtrs.set_node_offset(offs);
-
+            
             mtrs.end_node_pick();
             mtrs.set_node_size(cluster_size(node));
 
@@ -167,28 +171,29 @@ public:
             // check distance
             for (size_t round = 0; round < 3; round++)
             {
-                const float *node_data_ptr = node.data.data();
-                size_t random_point = DEFAULT_CENTER_IDX;
+                size_t random_point = std::numeric_limits<size_t>::max();
                 double prob = rand_double(rand_eng) * node_ref.cost();       
                 double cumulative = 0.0;
-
-                for (size_t i = 0; i < cluster_size(node); i++)
-                {
-                    cumulative += node.dcache[i];
+                
+                for (size_t partition = 0; partition < node.n_partitions(); partition++) {
+                for (size_t pidx = node[partition].first; pidx < node[partition].first + node[partition].second; pidx++) {
+                    cumulative += dcache[pidx];
                     if (cumulative >= prob)
                     {
-                        random_point = i;
+                        random_point = pidx;
                         break;
                     }
                 }
 
-                passert(random_point != DEFAULT_CENTER_IDX, "Random point should be different from current center, it={} round={} prob={} cumulative={} node_cost={}",
+                passert(random_point !=  std::numeric_limits<size_t>::max(), "Random point should be different from size_t::max, it={} round={} prob={} cumulative={} node_cost={}",
                         choosen_k, round, prob, cumulative, node_ref.cost());
 
                 double cost = 0.0;
-                for (size_t i = 0; i < cluster_size(node); i++) {
-                    double old_dist = node.dcache[i];
-                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(node_data_ptr, node.sqnorms.data(), d, i, random_point);
+
+                for (size_t partition = 0; partition < node.n_partitions(); partition++) {
+                for (size_t pidx = node[partition].first; pidx < node[partition].first + node[partition].second; pidx++) {
+                    double old_dist = dcache[pidx];
+                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, pidx, random_point);
                     cost += std::min(old_dist, new_dist);
                 }
 
@@ -210,62 +215,58 @@ public:
 
             mtrs.start_split();
 
-            std::vector<bool> is_left_mask(cluster_size(node), false);
+            std::vector<bool> is_left_mask(node.size(), false);
 
             double right_cost = 0.0, left_cost = 0.0;
-            for (size_t i = 0; i < cluster_size(node); i++)
-            {
-                const float* data_ptr = node.data.data();
-                double dist_old_center = node.dcache[i];
-                double dist_new_center = flat_wpoints_l2_dot_distance<WithWeights>(data_ptr, node.sqnorms.data(), d, i, best_index);
-                
+            for (size_t partition = 0; partition < node.n_partitions(); partition++) {
+            for (size_t pidx = node[partition].first; pidx < node[partition].first + node[partition].second; pidx++) {
+
+                double dist_old_center = dcache[pidx];
+                double dist_new_center = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, pidx, best_index);
+
                 bool take_left = dist_old_center <= dist_new_center;
                 is_left_mask[i] = take_left;
                 if (take_left) {
                     left_cost += dist_old_center;
                 } else {
                     right_cost += dist_new_center;
-                    node.dcache[i] = dist_new_center; // Update dcache for the right child
+                    dcache[pidx] = dist_new_center;
                 }
             }
 
-            passert(is_left_mask[DEFAULT_CENTER_IDX], "Left mask should include the center point, iteration {}", choosen_k);
+            // passert(is_left_mask[DEFAULT_CENTER_IDX], "Left mask should include the center point, iteration {}", choosen_k); // todo
             passert(!is_left_mask[best_index], "Left mask should not include the new center point, iteration {}", choosen_k);
 
-            size_t left_pos = 0;
-            size_t right_pos = cluster_size(node) - 1;
+            // Let's create a contiguous index of where left points (and so right points) are.
+            // exaple of mask: [ 1 , 0 , 1 , 1 , 0 , 0 , 1 , 1 , 1 , 1 , 0 , 0 , 0 , 0 , 1 , 1 , 0 , 0 , 0 , 0]
+            //                 { 0 , 1 , 2 , 3 , 4 , 5 , 6 , 7 , 8 , 9 ,10 ,11 ,12 ,13 ,14 ,15 ,16 ,17 ,18 ,19} indices
+            //                 
+            // extracted seq:  [ (0,1),  (2,2),          (6,4),                         (14,2)         ]
 
-            while (left_pos <= right_pos) {
-                if (is_left_mask[left_pos]) {
-                    ++left_pos;
-                    continue;
+            std::vector<std::pair<size_t, size_t>> left_partitions;
+            std::vector<std::pair<size_t, size_t>> right_partitions;
+            
+            size_t start_idx = 0;
+            bool prev_mask = is_left_mask[0];
+            for (size_t rel_idx = 0; rel_idx < is_left_mask.size(); rel_idx++)  {
+                if (is_left_mask[rel_idx] != prev_mask) {
+                    size_t length = rel_idx - start_idx;
+                    if (prev_mask) {
+                        left_partitions.emplace_back(start_idx, length);
+                    } else {
+                        right_partitions.emplace_back(start_idx, length);
+                    }
+                    start_idx = rel_idx;
+                    prev_mask = is_left_mask[rel_idx];
                 }
-                
-                
-                if (!is_left_mask[right_pos]) {
-                    --right_pos;
-                    continue;
-                }
-
-                // std::swap(is_left_mask[left_pos], is_left_mask[right_pos]);
-                bool tmp = is_left_mask[left_pos];
-                is_left_mask[left_pos] = is_left_mask[right_pos];
-                is_left_mask[right_pos] = tmp;
-
-                move_point(node, left_pos, right_pos);
-
-                if (best_index == left_pos) best_index = right_pos;
-                else if (best_index == right_pos) best_index = left_pos;
-
-                ++left_pos;
-                --right_pos;
             }
 
-            size_t left_count = left_pos;
+            // Compactation, move points untill we reach some level of cache friendliness
 
-            move_point(node, best_index, left_count);
-            best_index = left_count;
-   
+
+
+
+
             mtrs.end_split();
 
             // ===================
@@ -279,13 +280,11 @@ public:
                 right_cost,
                 ClusterProps(node.data.subspan(0, left_count * STRIDE),
                              node.sqnorms.subspan(0, left_count),
-                             node.dcache.subspan(0, left_count),
-                             node.n_splits + 1
+                             node.dcache.subspan(0, left_count)
                 ),
                 ClusterProps(node.data.subspan(left_count * STRIDE),
                              node.sqnorms.subspan(left_count),
-                             node.dcache.subspan(left_count),
-                             node.n_splits + 1
+                             node.dcache.subspan(left_count)
                 )
             );
 
@@ -294,31 +293,6 @@ public:
             mtrs.end_cost_update();
             mtrs.end_iteration();
         }   
-
-
-        // dump leaf ranges
-        std::string csv = "start_idx,end_idx,cost,n_splits\n";
-        for (const auto& cluster_ref : cluster_set) {
-            const ClusterProps &cluster = cluster_ref.props;
-            const size_t npoints = cluster.data.size() / STRIDE;
-            size_t start_idx = static_cast<size_t>(cluster.data.data() - data) / STRIDE;
-            size_t end_idx = start_idx + npoints;
-            csv += std::format("{},{},{},{}\n", start_idx, end_idx, cluster_ref.cost(), cluster.n_splits);
-        }
-
-        // dump into folder .dumps/<rnd>.csv
-        {
-            static int dump_id = 0;
-            std::string filename = std::format(".dumps/split_dump_{}.csv", dump_id++);
-            std::ofstream file(filename);
-            if (file.is_open()) {
-                file << csv;
-                file.close();
-                std::cout << "Dumped split clusters to " << filename << "\n";
-            } else {
-                std::cerr << "Failed to open file " << filename << " for writing\n";
-            }
-        }
 
 
         mtrs.start_final_coreset();

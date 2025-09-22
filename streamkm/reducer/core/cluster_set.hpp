@@ -40,8 +40,10 @@ template <typename T>
 concept _CCS_API = requires(T a, typename T::TCluster& c, double p_cost, double c_cost, typename T::TCluster::TProps p_props, typename T::TCluster::TProps c_props) {
     { a.total_cost() } -> std::same_as<double>;
     { a.pick() } -> std::same_as<typename T::TCluster&>;
+    { a.size() } -> std::same_as<std::size_t>;
     { a.cluster_split(c, p_cost, c_cost, std::move(p_props), std::move(c_props)) }
-        -> std::same_as<void>;};
+        -> std::same_as<std::pair<typename T::TCluster& , typename T::TCluster&>>;
+    };
 
 template <typename T>
 concept _CCS_TCluster = requires {
@@ -153,6 +155,7 @@ public:
 
 
     TreeCoresetClusterSet(size_t nclusters, std::pair<Props, double>&& init_root,  URBG& rand_eng) :
+        _m_leaf_count(1),
         arena(nclusters * 2 + 1),
         rand_eng(rand_eng),
         rand_double(0.0, 1.0) {
@@ -184,7 +187,7 @@ public:
         return std::ref(*node);
     }
 
-    void cluster_split(Node& origin, double new_parent_cost, double new_cluster_cost, Props&& origin_props, Props&& new_cluster_props) {
+    std::pair<Node&, Node&> cluster_split(Node& origin, double new_parent_cost, double new_cluster_cost, Props&& origin_props, Props&& new_cluster_props) {
 
         passert(origin.is_leaf(), "Can only split leaf nodes is_leaf={}", origin.is_leaf());
         passert(new_parent_cost >= 0.0, "Parent cost should be non-negative, got {}", new_parent_cost);
@@ -220,8 +223,15 @@ public:
             curr_node->_cost = curr_node->lc->_cost + curr_node->rc->_cost;
             curr_node = curr_node->parent;
         }
+
+        _m_leaf_count++;
+
+        return {std::ref(*lc), std::ref(*rc)};
     }
 
+    const std::size_t size() const noexcept {
+        return _m_leaf_count;
+    }
 
     LeafIteratorT<Node> begin() {
         return LeafIteratorT<Node>(root);
@@ -237,6 +247,7 @@ public:
     }
 
 private:
+    std::size_t _m_leaf_count;
     URBG& rand_eng;
     NodeArena arena;
     Node* root = nullptr;
@@ -293,7 +304,7 @@ Cluster& pick() {
 }
 
 
-void cluster_split(Cluster& origin, double new_parent_cost, double new_cluster_cost, Props&& origin_props, Props&& new_cluster_props) {
+std::pair<Cluster&, Cluster&> cluster_split(Cluster& origin, double new_parent_cost, double new_cluster_cost, Props&& origin_props, Props&& new_cluster_props) {
     passert(new_parent_cost >= 0.0, "Parent cost should be non-negative, got {}", new_parent_cost);
     passert(new_cluster_cost >= 0.0, "New cluster cost should be non-negative, got {}", new_cluster_cost);
     
@@ -306,11 +317,21 @@ void cluster_split(Cluster& origin, double new_parent_cost, double new_cluster_c
     origin._cost = new_parent_cost;
     origin.props = std::move(origin_props);
 
+    // assert reallocation is not happening
+    passert(_m_clusters.size() < _m_clusters.capacity(), "Cluster vector reallocation happened, increase initial capacity size={}, capacity={}", _m_clusters.size(), _m_clusters.capacity());
+
     _m_clusters.push_back(Cluster{
         .index = index,
         ._cost = new_cluster_cost,
         .props = std::move(new_cluster_props)
     });
+
+    return {std::ref(origin), std::ref(_m_clusters.back())};
+}
+
+
+const std::size_t size() const noexcept {
+    return _m_clusters.size();
 }
 
     auto begin() { return _m_clusters.begin(); }
