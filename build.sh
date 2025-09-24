@@ -1,14 +1,46 @@
 set -e
 
+# usage: ./build.sh {flags} -- {args to program}
+
+
+RUN_CMD="no"
+
+FLAGS=()
+ARGS=()
+
+for arg in "$@"; do
+    if [ "$arg" == "--" ]; then
+        RUN_CMD="yes"
+        continue
+    fi
+
+    if [ "$RUN_CMD" == "no" ]; then
+        FLAGS+=("$arg")
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+
+FORCE_REBUILD="no"
+for f in "${FLAGS[@]}"; do
+    if [ "$f" == "-f" ] || [ "$f" == "--force" ]; then
+        FORCE_REBUILD="yes"
+    fi
+done
+
+
 mkdir -p .build
 
-CC=clang++
+CC=g++
 CFLAGS="--std=c++20 -I. "
+# CFLAGS+=" -O0 -g -fsanitize=address -fno-omit-frame-pointer"
+# CFLAGS+=" -O0 -g  -fno-omit-frame-pointer"
+# CFLAGS+=" -O3 -ffast-math -march=native"
 CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
-# CFLAGS+=" -O3 -march=native -DDISABLE_PASSERT"
+# CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
 
 # CFLAGS+=" -g -O1 -march=native -fsanitize=address -fno-omit-frame-pointer"
-# CFLAGS+=" -O0 -g -fsanitize=address -fno-omit-frame-pointer"
 
 # g++ -O3 -ffast-math -march=native --std=c++20 -I. -o main main.cpp        -DDISABLE_PASSERT
 
@@ -59,17 +91,20 @@ done
 BUILD_FILE="./.build/main"
 if [ -f "$BUILD_FILE" ]; then
     BUILD_UPDATE=$(stat -c %Y "$BUILD_FILE")
+    OLD_CFLAGS=$(readelf --string-dump=.cflags "$BUILD_FILE")
+    if [[ "$OLD_CFLAGS" != *"$CFLAGS"* ]]; then
+        echo "CFLAGS changed, rebuilding..."
+        echo "Old CFLAGS: $OLD_CFLAGS"
+        echo "New CFLAGS: $CFLAGS"
+        BUILD_UPDATE=0
+    elif [ "$FORCE_REBUILD" == "yes" ]; then
+        echo "Force rebuild enabled, rebuilding..."
+        BUILD_UPDATE=0
+    fi
 else
     BUILD_UPDATE=0
 fi
 
-OLD_CFLAGS=$(readelf --string-dump=.cflags "$BUILD_FILE")
-if [[ "$OLD_CFLAGS" != *"$CFLAGS"* ]]; then
-    echo "CFLAGS changed, rebuilding..."
-    echo "Old CFLAGS: $OLD_CFLAGS"
-    echo "New CFLAGS: $CFLAGS"
-    BUILD_UPDATE=0
-fi
 
 if [ "$LATEST_SOURCE_DEP_UPDATE" -gt "$BUILD_UPDATE" ]; then
     echo "Changes detected, rebuilding..."
@@ -84,5 +119,7 @@ else
 fi
 
 
-echo "Build complete, running..."
-./.build/main "$@"
+echo "Build complete."
+if [ "$RUN_CMD" == "yes" ]; then
+    ./.build/main "${ARGS[@]}"
+fi

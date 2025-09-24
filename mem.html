@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>CSV with IndexedDB Persistence</title>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0px;
+      }
+      .flex-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      #dataCanvas {
+        border: 1px solid #ccc;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="flex-row">
+      <h1>CSV IndexedDB Loader</h1>
+      <input type="file" id="csvFile" accept=".csv" />
+      <button id="clearDB">Clear DB</button>
+    </div>
+
+    <div>
+      <canvas
+        id="dataCanvas"
+        width="800"
+        height="400"
+        style="border: 1px solid #000000"
+      ></canvas>
+    </div>
+
+    <script>
+      // ---------------------
+      // CSV Parser
+      // ---------------------
+      function csvToJson(csv) {
+        const [headerLine, ...lines] = csv.trim().split("\n");
+        const headers = headerLine.split(",");
+        return lines.map((line) => {
+          const values = line.split(",");
+          return Object.fromEntries(headers.map((h, i) => [h, values[i]]));
+        });
+      }
+
+      // ---------------------
+      // IndexedDB Helpers
+      // ---------------------
+      const DB_NAME = "csvDB";
+      const STORE_NAME = "files";
+
+      function openDB(callback) {
+        const request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
+        };
+        request.onsuccess = (e) => callback(e.target.result);
+        request.onerror = (e) => console.error("DB open error", e);
+      }
+
+      function saveToDB(key, value) {
+        openDB((db) => {
+          const tx = db.transaction(STORE_NAME, "readwrite");
+          tx.objectStore(STORE_NAME).put(value, key);
+          tx.oncomplete = () => console.log("Saved to DB");
+        });
+      }
+
+      function loadFromDB(key, callback) {
+        openDB((db) => {
+          const tx = db.transaction(STORE_NAME, "readonly");
+          const req = tx.objectStore(STORE_NAME).get(key);
+          req.onsuccess = (e) => callback(e.target.result);
+        });
+      }
+
+      function clearDB() {
+        openDB((db) => {
+          const tx = db.transaction(STORE_NAME, "readwrite");
+          tx.objectStore(STORE_NAME).clear();
+          tx.oncomplete = () => {
+            console.log("DB cleared");
+          };
+        });
+      }
+
+      class MemBlock {
+        constructor(
+          name,
+          capacityBytes,
+          color,
+          nextLevel = null,
+          lineSize = 64
+        ) {
+          this.name = name;
+          this.capacityBytes = capacityBytes; // bytes
+          this.lineSize = lineSize; // bytes per block/line
+          this.color = color;
+          this.nextLevel = nextLevel;
+
+          this.maxLines = Math.floor(capacityBytes / lineSize);
+          this.cache = new Set(); // stores line IDs
+          this.onHit = (offs, size) => {};
+          this.onMiss = (offs, size) => {};
+        }
+
+        // Convert address range [offs..offs+size) into cache line IDs
+        _getLineIds(offsBytes, sizeBytes) {
+          let ids = [];
+          let start = Math.floor(offsBytes / this.lineSize);
+          let end = Math.floor((offsBytes + sizeBytes - 1) / this.lineSize);
+          for (let i = start; i <= end; i++) ids.push(i);
+          return ids;
+        }
+
+        insert(offsBytes, sizeBytes) {
+          const ids = this._getLineIds(offsBytes, sizeBytes);
+
+          for (let id of ids) {
+            if (this.cache.has(id)) {
+              // ✅ Cache hit
+              this.onHit(offsBytes, sizeBytes, this.name);
+            } else {
+              // ❌ Cache miss → fetch this *line* from lower level
+              if (this.nextLevel) {
+                const nextAddr = id * this.lineSize;
+                this.nextLevel.insert(nextAddr, this.lineSize);
+              }
+              this.onMiss(offsBytes, sizeBytes, this.name);
+
+              // Insert new line, evict if full
+              if (this.cache.size >= this.maxLines) {
+                const first = this.cache.values().next().value;
+                this.cache.delete(first);
+              }
+              this.cache.add(id);
+            }
+          }
+        }
+      }
+
+      async function render_data(data) {
+        // create a canvas and draw something simple
+        const canvas = document.getElementById("dataCanvas");
+        // set width to page width
+        canvas.width = window.innerWidth;
+        canvas.height = 400;
+
+        const DATA_ARR_Y_OFFSET = 0;
+        const DATA_ARR_HEIGHT = 40;
+        const MEM_H_Y_OFFSET = 50;
+
+        const ctx = canvas.getContext("2d");
+
+        let ram = new MemBlock("RAM", Infinity, "#a0c4ff", null); // practically unbounded
+        let l3 = new MemBlock("L3", 8 * 1024 * 1024, "#bdb2ff", ram); // 8MB
+        let l2 = new MemBlock("L2", 256 * 1024, "#ffc6ff", l3); // 256KB
+        let l1 = new MemBlock("L1", 32 * 1024, "#fffffc", l2); // 32KB
+
+
+        // create array bars for each cluster (the color is based on where it is in memory, default ram)
+        ctx.fillStyle = ram.color;
+        const bar_width = canvas.width;
+        const bar_height = DATA_ARR_HEIGHT;
+        ctx.fillRect(0, DATA_ARR_Y_OFFSET, bar_width, bar_height);
+
+        // write in flexbox style memory hierarchy to canvas
+
+        const hierarchy = [ram, l3, l2, l1];
+        const width_per_level = canvas.width / hierarchy.length;
+
+        for (let i = 0; i < hierarchy.length; i++) {
+          const mem = hierarchy[i];
+          const x = i * width_per_level;
+          const y = MEM_H_Y_OFFSET;
+          const height = canvas.height;
+
+          ctx.fillStyle = mem.color;
+          ctx.fillRect(x, y, width_per_level, height);
+
+          ctx.fillStyle = "#000";
+          ctx.font = "16px Arial";
+          ctx.fillText(
+            `${mem.name} (${(mem.size / (1024 * 1024)).toFixed(1)} MB)`,
+            x + 10,
+            y + 30
+          );
+
+          mem.onHit = (offs, size, name) => {
+            ctx.fillStyle = "green";
+            ctx.fillRect(x + width_per_level - 10, y, 10, 10);
+          };
+
+          mem.onMiss = (offs, size, name) => {
+            ctx.fillStyle = "red";
+            ctx.fillRect(x + width_per_level - 10, y + 20, 10, 10);
+          };
+        }
+
+        function clear_mem_status () {
+          for (let i = 0; i < hierarchy.length; i++) {
+            const mem = hierarchy[i];
+            const x = i * width_per_level;
+            const y = MEM_H_Y_OFFSET;
+            ctx.fillStyle = mem.color;
+            ctx.fillRect(x + width_per_level - 10, y, 10, 30);
+          }
+        }
+
+        const total_node_size = data[0].node_size;
+        const el_w = bar_width / total_node_size;
+
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i];
+
+          const stride = 8 * 4 + 4 + 2 * 8; // 8 floats + 1 float + 2 doubles
+        //   l1.insert(row.node_offset * stride, row.node_size * stride);
+
+
+          const x = row.node_offset * el_w;
+          ctx.fillStyle = "red";
+          ctx.fillRect(
+            x,
+            DATA_ARR_Y_OFFSET + bar_height,
+            row.node_size * el_w,
+            10
+          );
+
+        //   // Let's access memoy sequentially
+        //   for (let j = 0; j < row.node_size; j++) {
+        //     const offs = (row.node_offset + j) * stride;
+        //     l1.insert(offs, stride);
+        //     await new Promise((r) => setTimeout(r, 100)); // yield to UI thread
+        //     clear_mem_status();
+        //   }
+            await new Promise((r) => setTimeout(r, 50)); // yield to UI thread
+
+
+          ctx.fillStyle = "white";
+          ctx.fillRect(x, DATA_ARR_Y_OFFSET + bar_height, bar_width, 10);
+            clear_mem_status();
+        }
+      }
+
+      // ---------------------
+      // UI handlers
+      // ---------------------
+      document
+        .getElementById("csvFile")
+        .addEventListener("change", function (evt) {
+          const file = evt.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const csv = e.target.result;
+            const json = csvToJson(csv);
+
+            // save as JSON string to IndexedDB
+            saveToDB("csvData", JSON.stringify(json));
+
+            console.log("Stored rows:", json.length);
+
+            // render data or do something with it
+            render_data(json);
+          };
+          reader.readAsText(file);
+        });
+
+      document.getElementById("clearDB").addEventListener("click", clearDB);
+
+      // On page load → auto reload from DB
+      window.addEventListener("load", () => {
+        loadFromDB("csvData", (val) => {
+          if (val) {
+            const json = JSON.parse(val);
+            console.log("Loaded from DB:", json.length, "rows");
+            render_data(json);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

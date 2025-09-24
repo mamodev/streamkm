@@ -64,7 +64,11 @@ EResult<void> Main(int argc, char** argv) {
         std::vector<float> points;
         std::chrono::milliseconds duration;
         {
-            auto reducer = streamkm::SwapTSqNormsCachedCoresetReducer();
+            auto reducer = streamkm::SwapFPcSqNormsCachedCoresetReducerWMetrics();
+            // auto reducer = streamkm::SwapFPcSqNormsCachedCoresetReducer();
+
+            // auto reducer = streamkm::SwapFSqNormsCachedCoresetReducer();
+
 
             gnu_perf.resume();
             auto start = std::chrono::high_resolution_clock::now(); 

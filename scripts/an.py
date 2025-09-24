@@ -40,17 +40,14 @@ if args.end_run is not None:
 df_grouped = df.groupby("iteration").mean().reset_index()
 df_grouped = df_grouped.drop(columns=["run"])
 
-# # slice based on start_iter and end_iter
-# if args.start_iter is not None:
-#     df_grouped = df_grouped[df_grouped["iteration"] >= args.start_iter]
-# if args.end_iter is not None:
-#     df_grouped = df_grouped[df_grouped["iteration"] <= args.end_iter]
-
 df_grouped["total_ns"] = df_grouped[metrics].sum(axis=1)
 
 metrics.append("total_ns")
 
 # print(df_grouped.head())
+df_grouped["node_size_max"] = (
+    df_grouped["total_ns"].rolling(window=100, min_periods=1).max()
+)
 
 # compute cumulative for each metric
 for m in metrics:
@@ -59,6 +56,7 @@ for m in metrics:
 # cumulative metrics list
 cumulative_metrics = [m + "_cumulative" for m in metrics]
 cumulative_metrics.append("node_size")
+cumulative_metrics.append("node_size_max")
 
 # subplot grid: 2 columns
 ncols = 2

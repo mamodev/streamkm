@@ -49,10 +49,16 @@ perf stat \
   -e l1_dtlb_misses \
   -e l2_dtlb_misses \
   -e l2_itlb_misses \
+  -e LLC-loads \
+  -e LLC-load-misses \
+  -e LLC-stores \
+  -e LLC-store-misses \
+  -r 5 \
   --control fd:$PERF_CTL_FD,$PERF_ACK_FD \
   -o "$STAT_OUT_FILE" \
-  -- ./main "$@"
+  -- .build/main "$@"
 
+echo "Performance statistics saved to $STAT_OUT_FILE"
 
 
 # perf record \

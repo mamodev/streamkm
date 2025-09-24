@@ -136,7 +136,7 @@ public:
         CCS<ClusterProps> cluster_set(k, init_root(), rand_eng);
 
         // CCS cluster_set =  CCS(k, init_root(), rand_eng);
-        // mtrs.end_init();
+        mtrs.end_init();
 
         mtrs.set_initial_tree_cost(initial_cost);
 
@@ -183,24 +183,48 @@ public:
                 }
             }
 
+            // double min_cost_center = std::numeric_limits<double>::max();    
+            // size_t best_index = std::numeric_limits<size_t>::max();
 
-            double min_cost_center = std::numeric_limits<double>::max();    
-            size_t best_index = std::numeric_limits<size_t>::max();
+            // for (size_t round = 0; round < split_iters; round++)
+            // {
+            //     size_t random_point = random_pick_indices[round];
+            //     double cost = 0.0;
+            //     for (size_t i = 0; i < length; i++) {
+            //         double old_dist = dcache[start_idx + i];
+            //         double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, random_point);
+            //         cost += std::min(old_dist, new_dist);
+            //     }
 
-            for (size_t round = 0; round < split_iters; round++)
-            {
-                size_t random_point = random_pick_indices[round];
-                double cost = 0.0;
-                for (size_t i = 0; i < length; i++) {
-                    double old_dist = dcache[start_idx + i];
-                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, random_point);
-                    cost += std::min(old_dist, new_dist);
+            //     if (cost < min_cost_center)
+            //     {
+            //         min_cost_center = cost;
+            //         best_index = random_point;
+            //     }
+            // }
+
+            // let's create a parallel version where we compute all costs in parallel to exploit cache locality
+
+            for (size_t round = 0; round < split_iters; round++) {
+                move_point(random_pick_indices[round], start_idx + 1 + round);
+            }
+
+
+            std::vector<double> costs(split_iters, 0.0);
+            for (size_t i = 0; i < length; i++) {
+                double old_dist = dcache[start_idx + i];
+                for (size_t round = 0; round < split_iters; round++) {
+                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, start_idx + 1 + round);
+                    costs[round] += std::min(old_dist, new_dist);
                 }
+            }
 
-                if (cost < min_cost_center)
-                {
-                    min_cost_center = cost;
-                    best_index = random_point;
+            size_t best_index = std::numeric_limits<size_t>::max();
+            double min_cost_center = std::numeric_limits<double>::max();
+            for (size_t round = 0; round < split_iters; round++) {
+                if (costs[round] < min_cost_center) {
+                    min_cost_center = costs[round];
+                    best_index = random_pick_indices[round];
                 }
             }
 
@@ -288,28 +312,28 @@ public:
                 break;
             }
 
-            // mtrs.start_node_pick();
+            mtrs.start_node_pick();
             TCluster* cluster_ref = split_stack.top();
             size_t cluster_start = cluster_ref->props.start;
             size_t cluster_length = cluster_ref->props.size;
             double cluster_cost = cluster_ref->cost();
             split_stack.pop();
-            // mtrs.end_node_pick();
+            mtrs.end_node_pick();
 
-            // mtrs.start_new_center();
+            mtrs.start_new_center();
             size_t best_index = pick_new_centre(cluster_start, cluster_length, cluster_cost);
-            // mtrs.end_new_center();
+            mtrs.end_new_center();
 
-            // mtrs.start_split();
+            mtrs.start_split();
             auto [left_count, left_cost, right_cost] = partition_cluster(cluster_start, cluster_length, best_index);
             passert(left_count > 0 && left_count < cluster_length, "Left count should be in (0, {}), got {}, start_idx {}, best_index {}", cluster_length, left_count, cluster_start, best_index);
             passert(left_cost >= 0.0, "Left cost should be positive, got {}, start_idx {}, best_index {} left_count {}", left_cost, cluster_start, best_index, left_count);
             passert(right_cost >= 0.0, "Right cost should be positive, got {}, start_idx {}, best_index {} right_count {}", right_cost, cluster_start, best_index, cluster_length - left_count);
             passert(dcache[cluster_start] == 0.0, "Current center should have zero distance to itself, got {}, start_idx {}, length {}", dcache[cluster_start], cluster_start, cluster_length);
             passert(dcache[cluster_start + left_count] == 0.0, "New center should have zero distance to itself, got {}, start_idx {}, length {}, left_count {}, best_index {}", dcache[cluster_start + left_count], cluster_start, cluster_length, left_count, best_index);
-            // mtrs.end_split();
+            mtrs.end_split();
 
-            // mtrs.start_cost_update();
+            mtrs.start_cost_update();
             size_t right_count = cluster_length - left_count;
             double balance_ratio =
                 static_cast<double>(std::min(left_count, right_count)) /
@@ -341,15 +365,15 @@ public:
             //     split_stack.push(&new_clusters.second);
             // }
 
-            // mtrs.end_cost_update();
+            mtrs.end_cost_update();
 
             iters++;
 
-            // mtrs.end_iteration();
+            mtrs.end_iteration();
         }
 
 
-        mtrs.end_init();
+        // mtrs.end_init();
         
         choosen_k = cluster_set.size();
 
@@ -357,20 +381,20 @@ public:
 
         passert(choosen_k <= k, "Number of clusters should not exceed k, got {} > {}", choosen_k, k);
         while (choosen_k < k) {  // Sequential splitting
-            mtrs.start_node_pick();
+            // mtrs.start_node_pick();
             auto& cluster_ref = cluster_set.pick();
             auto& cluster = cluster_ref.props;
-            mtrs.end_node_pick();
+            // mtrs.end_node_pick();
 
-            mtrs.start_new_center();
+            // mtrs.start_new_center();
             size_t best_index = pick_new_centre(cluster.start, cluster.size, cluster_ref.cost());
-            mtrs.end_new_center();
+            // mtrs.end_new_center();
 
-            mtrs.start_split();
+            // mtrs.start_split();
             auto [left_count, left_cost, right_cost] = partition_cluster(cluster.start, cluster.size, best_index);
-            mtrs.end_split();
+            // mtrs.end_split();
 
-            mtrs.start_cost_update();
+            // mtrs.start_cost_update();
             cluster_set.cluster_split(
                 cluster_ref,
                 left_cost,
@@ -378,10 +402,10 @@ public:
                 ClusterProps(cluster.start, left_count, cluster.size + 1),
                 ClusterProps(cluster.start + left_count, cluster.size - left_count, cluster.size + 1)
             );
-            mtrs.end_cost_update();
+            // mtrs.end_cost_update();
 
             choosen_k++;
-            mtrs.end_iteration();
+            // mtrs.end_iteration();
         }
 
 
