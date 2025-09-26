@@ -82,6 +82,9 @@ public:
         std::uniform_int_distribution<size_t> rand_index(0, n - 1);
         std::size_t choosen_k = 1;
 
+        std::vector<size_t> indices(n);
+        for (size_t i = 0; i < n; i++) indices[i] = i;
+
         std::vector<double> squared_norms;
         std::vector<double> dcache;
 
@@ -141,43 +144,90 @@ public:
         mtrs.set_initial_tree_cost(initial_cost);
 
 
-        auto pick_new_centre = [&] (size_t start_idx, size_t length, double cluster_cost) -> size_t {
+        const size_t MinSplitIters = 3;
+        std::vector<double> random_pick_probs(MinSplitIters, 0.0);
+        std::vector<size_t> random_pick_indices(MinSplitIters, 0);
 
+        auto pick_new_centre = [&] (size_t start_idx, size_t length, double cluster_cost) -> size_t {
+            
             passert(dcache[start_idx] == 0.0, "Current center should have zero distance to itself, got {}, start_idx {}, length {}", dcache[start_idx], start_idx, length);
 
-            double min_cost_center = std::numeric_limits<double>::max();    
-            size_t best_index = std::numeric_limits<size_t>::max();
+            size_t split_iters = std::min(MinSplitIters, length - 1);
+            { // Initializing random picks
+                for (size_t i = 0; i < split_iters; i++)
+                    random_pick_probs[i] = rand_double(rand_eng) * cluster_cost;
 
-            for (size_t round = 0; round < 3; round++)
-            {
-                size_t random_point = std::numeric_limits<size_t>::max();
-                double prob = rand_double(rand_eng) * cluster_cost;       
+                std::sort(random_pick_probs.begin(), random_pick_probs.end());
+
+                size_t p_index = 0;
                 double cumulative = 0.0;
-
-                for (size_t i = 1; i < length; i++)
+                for (size_t i = 0; i < length; i++)
                 {
                     cumulative += dcache[start_idx + i];
-                    if (cumulative >= prob)
+                    if (cumulative >= random_pick_probs[p_index])
                     {
-                        random_point = start_idx + i;
-                        break;
+                        random_pick_indices[p_index] = start_idx + i;
+                        p_index++;
+                        if (p_index >= split_iters) break;
                     }
                 }
 
-                passert(random_point != std::numeric_limits<size_t>::max(), "Random point should be different from size_t::max, it={} round={} prob={} cumulative={} node_cost={} node_start={} node_length={}",
-                        choosen_k, round, prob, cumulative, cluster_cost, start_idx, length);
+                // ensure all picks are filled
+                if (p_index < split_iters) {
+                    std::uniform_int_distribution<size_t> rand_index(0, length - 1);
+                    for (; p_index < split_iters; p_index++) {
+                        size_t rp = rand_index(rand_eng) + start_idx;
+                        while(rp == start_idx) {
+                            rp = rand_index(rand_eng) + start_idx;
+                        }
 
-                double cost = 0.0;
-                for (size_t i = 0; i < length; i++) {
-                    double old_dist = dcache[start_idx + i];
-                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, random_point);
-                    cost += std::min(old_dist, new_dist);
+                        random_pick_indices[p_index] = rp;
+                    }
                 }
+            }
 
-                if (cost < min_cost_center)
-                {
-                    min_cost_center = cost;
-                    best_index = random_point;
+            // double min_cost_center = std::numeric_limits<double>::max();    
+            // size_t best_index = std::numeric_limits<size_t>::max();
+
+            // for (size_t round = 0; round < split_iters; round++)
+            // {
+            //     size_t random_point = random_pick_indices[round];
+            //     double cost = 0.0;
+            //     for (size_t i = 0; i < length; i++) {
+            //         double old_dist = dcache[start_idx + i];
+            //         double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, random_point);
+            //         cost += std::min(old_dist, new_dist);
+            //     }
+
+            //     if (cost < min_cost_center)
+            //     {
+            //         min_cost_center = cost;
+            //         best_index = random_point;
+            //     }
+            // }
+
+            // let's create a parallel version where we compute all costs in parallel to exploit cache locality
+
+            for (size_t round = 0; round < split_iters; round++) {
+                move_point(random_pick_indices[round], start_idx + 1 + round);
+            }
+
+
+            std::vector<double> costs(split_iters, 0.0);
+            for (size_t i = 0; i < length; i++) {
+                double old_dist = dcache[start_idx + i];
+                for (size_t round = 0; round < split_iters; round++) {
+                    double new_dist = flat_wpoints_l2_dot_distance<WithWeights>(data, squared_norms.data(), d, i, start_idx + 1 + round);
+                    costs[round] += std::min(old_dist, new_dist);
+                }
+            }
+
+            size_t best_index = std::numeric_limits<size_t>::max();
+            double min_cost_center = std::numeric_limits<double>::max();
+            for (size_t round = 0; round < split_iters; round++) {
+                if (costs[round] < min_cost_center) {
+                    min_cost_center = costs[round];
+                    best_index = random_pick_indices[round];
                 }
             }
 
@@ -257,9 +307,16 @@ public:
         const size_t split_threshold = 2 * (n / k); // Stop splitting when a cluster has less than n/k points
         const double balance_threshold = 0.05;
 
+        const size_t L1Cache_Size = 32 * 1024; // 32 KB
+        const size_t L2Cache_Size = 512 * 1024; // 256 KB
+        const size_t Points_Per_L1 = L1Cache_Size / (STRIDE * sizeof(float)); // Number of points that fit in L1 cache
+        const size_t Points_Per_L2 = L2Cache_Size / (STRIDE * sizeof(float)); // Number of points that fit in L2 cache
 
         size_t iters = 0;
         while ( !split_stack.empty() ) {
+             if (iters > k - 4) {
+                break;
+            }
 
             // mtrs.start_node_pick();
             TCluster* cluster_ref = split_stack.top();
@@ -291,8 +348,6 @@ public:
             // bool balanced_enough = (balance_ratio >= balance_threshold);
             // bool reached_threshold = (left_count <= split_threshold) || (right_count <= split_threshold);
 
-           
-
             std::pair<TCluster&, TCluster&> new_clusters = cluster_set.cluster_split(
                 std::ref(*cluster_ref),
                 left_cost,
@@ -301,7 +356,7 @@ public:
                 ClusterProps(cluster_start + left_count, right_count, cluster_ref->props.split_count + 1)
             );
 
-            if (cluster_ref->props.split_count < 16) {
+            if (cluster_ref->props.split_count < 17) {
 
                 if (left_count > split_threshold) 
                     split_stack.push(&new_clusters.first);
@@ -326,7 +381,8 @@ public:
         
         choosen_k = cluster_set.size();
 
-        std::cout << std::format("Finished splitting after {} iterations, got {} clusters / {} requested\n", iters, choosen_k, k);
+        std::cout << std::format("Finished splitting after {} iterations, got {} clusters / {} requested, percent {}%\n"
+            , iters, choosen_k, k, static_cast<double>(choosen_k) / k * 100.0);
 
         passert(choosen_k <= k, "Number of clusters should not exceed k, got {} > {}", choosen_k, k);
         while (choosen_k < k) {  // Sequential splitting

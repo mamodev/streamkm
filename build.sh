@@ -36,8 +36,8 @@ CC=g++
 CFLAGS="--std=c++20 -I. "
 # CFLAGS+=" -O0 -g -fsanitize=address -fno-omit-frame-pointer"
 # CFLAGS+=" -O0 -g  -fno-omit-frame-pointer"
-# CFLAGS+=" -O3 -ffast-math -march=native"
-CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
+CFLAGS+=" -O3 -ffast-math -march=native"
+# CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
 # CFLAGS+=" -O3 -ffast-math -march=native -DDISABLE_PASSERT"
 
 # CFLAGS+=" -g -O1 -march=native -fsanitize=address -fno-omit-frame-pointer"

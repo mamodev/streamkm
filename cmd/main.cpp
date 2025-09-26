@@ -67,8 +67,8 @@ EResult<void> Main(int argc, char** argv) {
             auto reducer = streamkm::SwapFPcSqNormsCachedCoresetReducerWMetrics();
             // auto reducer = streamkm::SwapFPcSqNormsCachedCoresetReducer();
 
+            // auto reducer = streamkm::SwapFPcSqNormsCachedCoresetReducer();
             // auto reducer = streamkm::SwapFSqNormsCachedCoresetReducer();
-
 
             gnu_perf.resume();
             auto start = std::chrono::high_resolution_clock::now(); 
